@@ -23,3 +23,11 @@
 /app/Config/core.php
 /app/Config/database.php
 /vendors/*
+
+##### Composer
+composer.phar
+**/vendor/**
+**/composer.lock
+
+*.cache
+tmp
