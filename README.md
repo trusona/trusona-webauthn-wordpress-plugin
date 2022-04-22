@@ -5,7 +5,7 @@
 - Try it out at [wordpress-appless.lab.trusona.net](https://wordpress-appless.lab.trusona.net)
 
 
-## Known caveats
+## Developement & Installation Caveats
 - Requires [composer](https://getcomposer.org) :disappointed_relieved:
   - future iterations will not.
 
