@@ -14,6 +14,7 @@
 
     require_once plugin_dir_path(__FILE__) . 'includes/trusona-functions.php';
     require_once plugin_dir_path(__FILE__) . 'includes/jwt-functions.php';
+    require_once plugin_dir_path(__FILE__) . 'includes/scim-functions.php';
 
 class TrusonaWebAuthnOpenID
 {
@@ -33,7 +34,9 @@ class TrusonaWebAuthnOpenID
       'client_secret' => 'Client Secret Key',
       'userinfo_url'  => 'Userinfo URL',
       'client_id'     => 'Client ID',
-      'login_url'     => 'Login URL'
+      'login_url'     => 'Login URL',
+      'scim_url'      => 'SCIM Users API Endpoint',
+      'scim_token'    => 'SCIM API Token'
     );
 
     public static $PARAMETERS; // assigned in the constructor;
@@ -45,25 +48,37 @@ class TrusonaWebAuthnOpenID
       4 => 'Cannot get valid token',
       5 => 'Cannot get user key',
       6 => 'User is not currently paired with Trusona.',
-      7 => 'Cannot get dynamic registration to complete',
-      8 => 'Unknown error',
-      9 => 'You haven’t been authorized to access this WordPress site. Contact the admin for access',
-      10 => 'Cannot validate ID Token'
+      7 => 'Unknown error',
+      8 => 'You haven’t been authorized to access this WordPress site. Contact the admin for access',
+      9 => 'Cannot validate ID Token'
     );
 
     public function __construct()
     {
         ob_start();
 
-        $url = "https://trusonafy.me/.well-known/openid-configuration";
+        $origin = "wordpress.staging.trusonasandbox.com";
+
+        $url = "https://$origin/.well-known/openid-configuration";
 
         $this->configuration = json_decode(file_get_contents($url));
         $this->jwks = json_decode(file_get_contents($this->configuration->jwks_uri), true);
 
         $this->callback_url = admin_url('admin-ajax.php?action=trusona_openid-callback');
 
-        add_action('validate_registration_action', array($this, 'validate_registration'));
-        do_action('validate_registration_action');
+        //
+        // Trusona can provide the following three values to you
+        //
+        $this->client_id = "";
+        $this->client_secret = "";
+        $this->scim_token = "";
+
+        $this->scim_url = "https://$origin/sso/scim/Users";
+
+        update_option(self::PLUGIN_ID_PREFIX . 'client_secret', $this->client_secret);
+        update_option(self::PLUGIN_ID_PREFIX . 'client_id', $this->client_id);
+        update_option(self::PLUGIN_ID_PREFIX . 'scim_token', $this->scim_token);
+        update_option(self::PLUGIN_ID_PREFIX . 'scim_url', $this->scim_url);
 
         add_action('wp_logout', array($this, 'trusona_openid_logout'));
         add_action('login_footer', array($this, 'login_footer'));
@@ -124,94 +139,16 @@ class TrusonaWebAuthnOpenID
 
     public function activate_defaults()
     {
-        if ($this->is_not_registered()) {
-            $this->remote_registration();
-        }
-
-        if ($this->is_registered()) {
-            update_option(self::PLUGIN_ID_PREFIX . 'self_service_onboarding', false);
-            update_option(self::PLUGIN_ID_PREFIX . 'disable_wp_form', false);
-            update_option(self::PLUGIN_ID_PREFIX . 'trusona_enabled', true);
-            update_option(self::PLUGIN_ID_PREFIX . 'activation', time());
-        }
-    }
-
-    private function is_not_registered()
-    {
-        return !get_option(self::PLUGIN_ID_PREFIX . 'client_id', false)
-        || !get_option(self::PLUGIN_ID_PREFIX . 'client_secret', false)
-        || !get_option(self::PLUGIN_ID_PREFIX . 'registration_access_token', false);
-    }
-
-    private function is_registered()
-    {
-        return !$this->is_not_registered();
-    }
-
-    public function validate_registration()
-    {
-        $token = get_option(self::PLUGIN_ID_PREFIX . 'registration_access_token');
-        $uri = get_option(self::PLUGIN_ID_PREFIX . 'registration_client_uri');
-
-        if ($token !== false && $uri !== false) {
-            // read this ... https://datatracker.ietf.org/doc/html/rfc7592
-            $authorization = 'Bearer ' . $token;
-            $headers = array('accept' => '*/*', 'authorization' => $authorization, 'user-agent' => user_agent());
-            $response = wp_safe_remote_get($uri, array('headers' => $headers));
-            $body = json_decode(wp_remote_retrieve_body($response));
-
-            if (success($response['response']['code'])) {
-                return;
-            }
-        }
-
-        $this->remote_registration();
+        update_option(self::PLUGIN_ID_PREFIX . 'self_service_onboarding', false);
+        update_option(self::PLUGIN_ID_PREFIX . 'disable_wp_form', false);
+        update_option(self::PLUGIN_ID_PREFIX . 'trusona_enabled', true);
+        update_option(self::PLUGIN_ID_PREFIX . 'activation', time());
     }
 
     private function site_name()
     {
         $site_name = get_bloginfo('name');
         return !isset($site_name) || trim($site_name) == '' ? 'blog-without-name' : trim($site_name);
-    }
-
-    private function remote_registration()
-    {
-        $body = array(
-          'token_endpoint_auth_method' => 'client_secret_post',
-          'redirect_uris' => array($this->callback_url),
-          'scope' => self::SCOPES,
-          'client_name' => $this->site_name(),
-          'grant_types' => array('implicit', 'authorization_code'),
-          'response_types' => array('code', 'id_token')
-        );
-
-        $headers = array('content-type' => 'application/json', 'user-agent' => user_agent());
-
-        // reference - https://openid.net/specs/openid-connect-registration-1_0.html
-        $response = wp_safe_remote_post(
-            $this->configuration->registration_endpoint,
-            array('headers' => $headers, 'body' => json_encode($body))
-        );
-
-        if (is_array($response) && intval($response['response']['code']) == 201) {
-            $body = json_decode(wp_remote_retrieve_body($response));
-
-            $this->registration_access_token = $body->registration_access_token;
-            $this->registration_client_uri = $body->registration_client_uri;
-            $this->client_secret = $body->client_secret;
-            $this->client_name = $body->client_name;
-            $this->client_id = $body->client_id;
-
-            update_option(self::PLUGIN_ID_PREFIX . 'registration_access_token', $this->registration_access_token);
-            update_option(self::PLUGIN_ID_PREFIX . 'registration_client_uri', $this->registration_client_uri);
-            update_option(self::PLUGIN_ID_PREFIX . 'client_secret', $this->client_secret);
-            update_option(self::PLUGIN_ID_PREFIX . 'client_name', $this->client_name);
-            update_option(self::PLUGIN_ID_PREFIX . 'client_id', $this->client_id);
-
-            $this->debug_log("IDP registration completed successfully");
-        } else {
-            $this->debug_log("IDP registration failed");
-        }
     }
 
     public function deactivate_trusona()
@@ -267,6 +204,8 @@ class TrusonaWebAuthnOpenID
 
         $subject = strtolower($jwt->sub);
         $user = get_user_by('email', $subject);
+
+        scim_user_registration($this->scim_url, $this->scim_token, $subject);
 
         if (isset($user) && $user instanceof WP_User && intval($user->ID) > 0) {
             list($is_admin, $user) = $this->has_admin(array($user));
